@@ -1,10 +1,14 @@
+# Secrets
+python-dotenv
+
 # Jupyter
 ipykernel
 
 # ETL
-requests        # Extract (HTTP)
-duckdb          # Transform
-psycopg[binary] # Load
+requests           # Extract (HTTP)
+polars[excel]      # Transform (Parquet + Excel)
+duckdb             # Transform
+psycopg[binary]    # Load
 
 # Statistical Modeling & ML
 scipy
