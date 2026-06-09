@@ -1,3 +1,5 @@
+CREATE SCHEMA IF NOT EXISTS silver;
+
 CREATE TABLE IF NOT EXISTS silver.ufs (
     uf_id SMALLINT PRIMARY KEY,
     sigla CHAR(2) NOT NULL UNIQUE,
@@ -16,9 +18,14 @@ CREATE TABLE IF NOT EXISTS silver.paises (
 );
 
 CREATE TABLE IF NOT EXISTS silver.regionais_saude (
-    regional_id SMALLINT PRIMARY KEY,
-    uf_id SMALLINT NOT NULL REFERENCES silver.ufs(uf_id)
+    regional_saude_id SERIAL PRIMARY KEY,
+    regional_id SMALLINT NOT NULL,
+    uf_id SMALLINT NOT NULL,
+    FOREIGN KEY (uf_id) REFERENCES silver.ufs(uf_id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_regionais_saude_unique
+    ON silver.regionais_saude (regional_id, uf_id);
 
 CREATE TABLE IF NOT EXISTS silver.unidades_notificadoras (
     unidade_id INTEGER PRIMARY KEY,
@@ -35,7 +42,7 @@ CREATE TABLE IF NOT EXISTS silver.pacientes (
     raca_cor VARCHAR(8) NOT NULL DEFAULT 'Ignorado',
     escolaridade VARCHAR(50) NOT NULL DEFAULT 'Ignorado',
     municipio_id INTEGER REFERENCES silver.municipios(municipio_id),
-    regional_residencia SMALLINT REFERENCES silver.regionais_saude(regional_id),
+    regional_residencia INTEGER REFERENCES silver.regionais_saude(regional_saude_id),
     pais_id SMALLINT REFERENCES silver.paises(pais_id),
     ocupacao VARCHAR(30)
 );
@@ -46,7 +53,7 @@ CREATE TABLE IF NOT EXISTS silver.notificacoes_casos (
     data_notificacao DATE NOT NULL,
     semana_notificacao SMALLINT NOT NULL,
     unidade_id INTEGER REFERENCES silver.unidades_notificadoras(unidade_id),
-    regional_notificacao SMALLINT REFERENCES silver.regionais_saude(regional_id),
+    regional_notificacao INTEGER REFERENCES silver.regionais_saude(regional_saude_id),
     data_primeiros_sintomas DATE NOT NULL,
     semana_primeiros_sintomas SMALLINT NOT NULL,
     data_investigacao DATE,
@@ -58,7 +65,6 @@ CREATE TABLE IF NOT EXISTS silver.notificacoes_casos (
     pais_provavel_infeccao SMALLINT REFERENCES silver.paises(pais_id),
     doenca_trabalho VARCHAR(10) NOT NULL DEFAULT 'Ignorado',
     evolucao_caso VARCHAR(30) NOT NULL DEFAULT 'Ignorado',
-    -- NDUPLIC_N: flag do próprio SINAN; filtrar WHERE nduplic = FALSE em análises
     nduplic BOOLEAN NOT NULL DEFAULT FALSE,
     fluxo_retorno SMALLINT,
     fluxo_recebido SMALLINT
@@ -75,3 +81,10 @@ CREATE TABLE IF NOT EXISTS silver.casos_encerrados (
     notificacao_id INTEGER NOT NULL REFERENCES silver.notificacoes_casos(notificacao_id),
     data_encerramento DATE NOT NULL
 );
+
+TRUNCATE TABLE
+    silver.casos_encerrados,
+    silver.obitos,
+    silver.ufs,
+    silver.paises
+CASCADE;
