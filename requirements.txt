@@ -1,0 +1,16 @@
+# Jupyter
+ipykernel
+
+# ETL
+duckdb
+psycopg[binary]
+
+# Statistical Modeling & ML
+scipy
+scikit-learn
+
+# Data Visualization
+matplotlib
+seaborn
+plotly
+streamlit
