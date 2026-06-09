@@ -223,15 +223,14 @@ def _build_paises(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _build_regionais(conn: duckdb.DuckDBPyConnection) -> None:
+    # Cria a tabela base com as combinações distintas (regional_id, uf_id)
     conn.execute("""
-        CREATE TABLE regionais_saude AS
-        
+        CREATE TEMP TABLE regionais_distinct AS
         WITH regional_raw AS (
             SELECT codigo_regional    AS regional_id_raw, uf_notificacao AS uf_raw FROM zika
             UNION
             SELECT regional_residencia, uf_residencia                              FROM zika
         ),
-        
         regional_casted AS (
             SELECT
                 TRY_CAST(regional_id_raw AS SMALLINT) AS regional_id,
@@ -242,20 +241,39 @@ def _build_regionais(conn: duckdb.DuckDBPyConnection) -> None:
               AND uf_raw IS NOT NULL
               AND TRIM(uf_raw) NOT IN ('', '/N')
         )
-        
         SELECT DISTINCT regional_id, uf_id
         FROM regional_casted
         WHERE regional_id IS NOT NULL
           AND uf_id IN (SELECT uf_id FROM ufs)
-        ORDER BY regional_id
+    """)
+
+    # Gera surrogate key (regional_saude_id)
+    conn.execute("""
+        CREATE TABLE regionais_saude AS
+        SELECT
+            ROW_NUMBER() OVER (ORDER BY uf_id, regional_id) AS regional_saude_id,
+            regional_id,
+            uf_id
+        FROM regionais_distinct
     """)
     log.info("regionais_saude → %d linhas", conn.execute("SELECT COUNT(*) FROM regionais_saude").fetchone()[0])
+
+    # Cria tabela de lookup para facilitar o mapeamento nas demais tabelas
+    conn.execute("""
+        CREATE TABLE regionais_lookup AS
+        SELECT regional_id, uf_id, regional_saude_id
+        FROM regionais_saude
+    """)
 
 
 def _build_unidades(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("""
         CREATE TABLE unidades_notificadoras AS
-        SELECT DISTINCT unidade_id, nome, tipo, municipio_id
+        SELECT DISTINCT ON (unidade_id)
+            unidade_id,
+            nome,
+            tipo,
+            municipio_id
         FROM (
             SELECT
                 TRY_CAST(codigo_unidade AS INT)        AS unidade_id,
@@ -269,10 +287,10 @@ def _build_unidades(conn: duckdb.DuckDBPyConnection) -> None:
               AND TRIM(codigo_unidade) NOT IN ('', '/N', '0')
               AND municipio_notificacao IS NOT NULL
               AND TRIM(municipio_notificacao) NOT IN ('', '/N')
-        )
+        ) sub
         WHERE unidade_id IS NOT NULL
           AND municipio_id IS NOT NULL
-        ORDER BY unidade_id
+        ORDER BY unidade_id, municipio_id
     """)
     log.info("unidades_notificadoras → %d linhas", conn.execute("SELECT COUNT(*) FROM unidades_notificadoras").fetchone()[0])
 
@@ -293,11 +311,13 @@ def _build_pacientes(conn: duckdb.DuckDBPyConnection) -> None:
             {raca_case}                                           AS raca_cor,
             {escol_case}                                          AS escolaridade,
             {_mun_fk('municipio_residencia')}                     AS municipio_id,
-            CASE WHEN TRY_CAST({_nullify('regional_residencia')} AS SMALLINT)
-                      IN (SELECT regional_id FROM regionais_saude)
-                 THEN TRY_CAST({_nullify('regional_residencia')} AS SMALLINT)
-                 ELSE NULL
-            END                                                   AS regional_residencia,
+            -- Resolve regional_saude_id a partir de (regional_residencia, uf_residencia)
+            (
+                SELECT rl.regional_saude_id
+                FROM regionais_lookup rl
+                WHERE rl.regional_id = TRY_CAST({_nullify('regional_residencia')} AS SMALLINT)
+                  AND rl.uf_id       = TRY_CAST({_nullify('uf_residencia')} AS SMALLINT)
+            )                                                     AS regional_residencia,
             CASE WHEN TRY_CAST({_nullify('pais_residencia')} AS SMALLINT)
                       IN (SELECT pais_id FROM paises)
                  THEN TRY_CAST({_nullify('pais_residencia')} AS SMALLINT)
@@ -329,11 +349,13 @@ def _build_notificacoes(conn: duckdb.DuckDBPyConnection) -> None:
                  THEN TRY_CAST({_nullify('codigo_unidade')} AS INT)
                  ELSE NULL
             END                                                      AS unidade_id,
-            CASE WHEN TRY_CAST({_nullify('codigo_regional')} AS SMALLINT)
-                      IN (SELECT regional_id FROM regionais_saude)
-                 THEN TRY_CAST({_nullify('codigo_regional')} AS SMALLINT)
-                 ELSE NULL
-            END                                                      AS regional_notificacao,
+            -- Resolve regional_saude_id a partir de (codigo_regional, uf_notificacao)
+            (
+                SELECT rl.regional_saude_id
+                FROM regionais_lookup rl
+                WHERE rl.regional_id = TRY_CAST({_nullify('codigo_regional')} AS SMALLINT)
+                  AND rl.uf_id       = TRY_CAST({_nullify('uf_notificacao')} AS SMALLINT)
+            )                                                       AS regional_notificacao,
             TRY_CAST(data_primeiros_sintomas AS DATE)                AS data_primeiros_sintomas,
             TRY_CAST(RIGHT({_nullify('semana_primeiros_sintomas')}, 2)
                 AS SMALLINT)                                         AS semana_primeiros_sintomas,
