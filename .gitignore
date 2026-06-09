@@ -1,5 +1,9 @@
 .venv/
+__pycache__/
+
+*.csv
+*.xls
+*.parquet
 
 .env
-*.csv
 CLAUDE.md
