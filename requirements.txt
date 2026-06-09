@@ -2,8 +2,9 @@
 ipykernel
 
 # ETL
-duckdb
-psycopg[binary]
+requests        # Extract (HTTP)
+duckdb          # Transform
+psycopg[binary] # Load
 
 # Statistical Modeling & ML
 scipy
