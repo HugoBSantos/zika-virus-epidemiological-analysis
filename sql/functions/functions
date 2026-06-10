@@ -1,0 +1,170 @@
+CREATE OR REPLACE FUNCTION silver.idade_anos(idade_codificada smallint)
+RETURNS numeric(8,2) AS $$
+DECLARE
+    idade_str varchar(4);
+    quantidade numeric(8,2);
+    idade      numeric(8,2);
+BEGIN
+    IF idade_codificada IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    idade_str := idade_codificada::varchar;
+    quantidade := SUBSTR(idade_str, 2, 3)::numeric;
+
+    IF    LEFT(idade_str, 1) = '4' THEN idade := quantidade;
+    ELSIF LEFT(idade_str, 1) = '3' THEN idade := quantidade / 12.0;
+    ELSIF LEFT(idade_str, 1) = '2' THEN idade := quantidade / 365.0;
+    ELSIF LEFT(idade_str, 1) = '1' THEN idade := quantidade / 8760.0;
+        RETURN NULL;
+    END IF;
+
+    RETURN ROUND(idade, 2);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION silver.resumo_epidemiologico_uf_ano(tipo_uf varchar(20))
+RETURNS TABLE (
+    uf_codigo  smallint,
+    ano        integer,
+    total_casos bigint
+) AS $$
+BEGIN
+    IF UPPER(tipo_uf) = 'NOTIFICACAO' THEN
+        RETURN QUERY
+            SELECT
+                m.uf_id::smallint,
+                EXTRACT(YEAR FROM n.data_notificacao)::integer,
+                COUNT(n.notificacao_id)
+            FROM silver.notificacoes_casos      n
+            JOIN silver.unidades_notificadoras  u  ON u.unidade_id   = n.unidade_id
+            JOIN silver.municipios              m  ON m.municipio_id = u.municipio_id
+            WHERE n.classificacao_final = 'Confirmado'
+            GROUP BY m.uf_id, EXTRACT(YEAR FROM n.data_notificacao)
+            ORDER BY 2 DESC, 3 DESC;
+
+    ELSIF UPPER(tipo_uf) = 'RESIDENCIA' THEN
+        RETURN QUERY
+            SELECT
+                m.uf_id::smallint,
+                EXTRACT(YEAR FROM n.data_notificacao)::integer,
+                COUNT(n.notificacao_id)
+            FROM silver.notificacoes_casos n
+            JOIN silver.pacientes          p  ON p.paciente_id  = n.paciente_id
+            JOIN silver.municipios         m  ON m.municipio_id = p.municipio_id
+            WHERE n.classificacao_final = 'Confirmado'
+            GROUP BY m.uf_id, EXTRACT(YEAR FROM n.data_notificacao)
+            ORDER BY 2 DESC, 3 DESC;
+
+    ELSIF UPPER(tipo_uf) = 'INFECCAO' THEN
+        -- Sem alteração de lógica; adicionado filtro IS NOT NULL
+        RETURN QUERY
+            SELECT
+                n.uf_provavel_infeccao::smallint,
+                EXTRACT(YEAR FROM n.data_notificacao)::integer,
+                COUNT(n.notificacao_id)
+            FROM silver.notificacoes_casos n
+            WHERE n.classificacao_final   = 'Confirmado'
+              AND n.uf_provavel_infeccao IS NOT NULL
+            GROUP BY n.uf_provavel_infeccao, EXTRACT(YEAR FROM n.data_notificacao)
+            ORDER BY 2 DESC, 3 DESC;
+
+    ELSE
+        RAISE EXCEPTION 'Tipo de UF inválido: %. Use: NOTIFICACAO, RESIDENCIA ou INFECCAO.', tipo_uf;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION silver.detectar_e_marcar_duplicatas()
+RETURNS integer AS $$
+DECLARE
+    linhas_afetadas integer;
+BEGIN
+    WITH CasosOrdenados AS (
+        SELECT
+            n.notificacao_id,
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    p.sexo,
+                    p.municipio_id,
+                    n.data_primeiros_sintomas,
+                    n.uf_provavel_infeccao
+                ORDER BY n.data_notificacao ASC, n.notificacao_id ASC
+            ) AS ordem_notificacao
+        FROM silver.notificacoes_casos n
+        JOIN silver.pacientes          p ON p.paciente_id = n.paciente_id
+    )
+    UPDATE silver.notificacoes_casos n
+    SET    nduplic = true
+    FROM   CasosOrdenados c
+    WHERE  n.notificacao_id       = c.notificacao_id
+      AND  c.ordem_notificacao    > 1
+      AND  n.nduplic              = false;
+
+    GET DIAGNOSTICS linhas_afetadas = ROW_COUNT;
+    RETURN linhas_afetadas;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION silver.inserir_notificacao_validada(
+    p_paciente_id                 integer,
+    p_data_notificacao            date,
+    p_semana_notificacao          smallint,
+    p_unidade_id                  integer,
+    p_regional_notificacao        integer,
+    p_data_primeiros_sintomas     date,
+    p_semana_primeiros_sintomas   smallint,
+    p_classificacao_final         character varying(20),
+    p_uf_provavel_infeccao        smallint,
+    p_municipio_provavel_infeccao integer
+)
+RETURNS integer AS $$
+DECLARE
+    v_notificacao_id  integer;
+    v_existe_paciente boolean;
+    v_existe_unidade  boolean;
+BEGIN
+    IF p_classificacao_final IS NOT NULL AND
+       p_classificacao_final NOT IN ('Confirmado','Descartado','Em investigação','Inconclusivo') THEN
+        RAISE EXCEPTION
+            'Classificação inválida: %. Valores aceitos: Confirmado, Descartado, Em investigação, Inconclusivo.',
+            p_classificacao_final;
+    END IF;
+
+    IF p_data_primeiros_sintomas > p_data_notificacao THEN
+        RAISE EXCEPTION
+            'Erro de Validação: data dos primeiros sintomas (%) não pode ser posterior à data de notificação (%).',
+            p_data_primeiros_sintomas, p_data_notificacao;
+    END IF;
+
+    SELECT EXISTS(SELECT 1 FROM silver.pacientes WHERE paciente_id = p_paciente_id)
+    INTO v_existe_paciente;
+    IF NOT v_existe_paciente THEN
+        RAISE EXCEPTION 'Erro de Integridade: paciente_id % não cadastrado.', p_paciente_id;
+    END IF;
+
+    IF p_unidade_id IS NOT NULL THEN
+        SELECT EXISTS(SELECT 1 FROM silver.unidades_notificadoras WHERE unidade_id = p_unidade_id)
+        INTO v_existe_unidade;
+        IF NOT v_existe_unidade THEN
+            RAISE EXCEPTION 'Erro de Integridade: unidade_id % não existe.', p_unidade_id;
+        END IF;
+    END IF;
+
+    INSERT INTO silver.notificacoes_casos (
+        paciente_id, data_notificacao, semana_notificacao,
+        unidade_id, regional_notificacao,
+        data_primeiros_sintomas, semana_primeiros_sintomas,
+        classificacao_final, uf_provavel_infeccao, municipio_provavel_infeccao
+    ) VALUES (
+        p_paciente_id, p_data_notificacao, p_semana_notificacao,
+        p_unidade_id, p_regional_notificacao,
+        p_data_primeiros_sintomas, p_semana_primeiros_sintomas,
+        COALESCE(p_classificacao_final, 'Inconclusivo'),
+        p_uf_provavel_infeccao, p_municipio_provavel_infeccao
+    )
+    RETURNING notificacao_id INTO v_notificacao_id;
+
+    RETURN v_notificacao_id;
+END;
+$$ LANGUAGE plpgsql;
