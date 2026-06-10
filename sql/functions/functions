@@ -16,7 +16,7 @@ BEGIN
     ELSIF LEFT(idade_str, 1) = '3' THEN idade := quantidade / 12.0;
     ELSIF LEFT(idade_str, 1) = '2' THEN idade := quantidade / 365.0;
     ELSIF LEFT(idade_str, 1) = '1' THEN idade := quantidade / 8760.0;
-        RETURN NULL;
+    ELSE RETURN NULL;
     END IF;
 
     RETURN ROUND(idade, 2);
