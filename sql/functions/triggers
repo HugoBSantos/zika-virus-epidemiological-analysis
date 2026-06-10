@@ -1,0 +1,130 @@
+CREATE SCHEMA IF NOT EXISTS audit;
+
+CREATE TABLE IF NOT EXISTS audit.sistema_logs (
+    log_id bigserial NOT NULL,
+    nome_esquema text NOT NULL,
+    nome_tabela text NOT NULL,
+    usuario_banco text NOT NULL DEFAULT current_user,
+    data_hora timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
+    operacao text NOT NULL,
+    dados_antigos jsonb,
+    dados_novos jsonb,
+    CONSTRAINT sistema_logs_pkey PRIMARY KEY (log_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_tabela ON audit.sistema_logs(nome_tabela);
+CREATE INDEX IF NOT EXISTS idx_logs_data_hora ON audit.sistema_logs(data_hora);
+
+-- Agora que Viram os triggers!
+
+CREATE OR REPLACE FUNCTION audit.fn_log_alteracoes()
+RETURNS trigger AS $$
+BEGIN
+    INSERT INTO audit.sistema_logs (
+        nome_esquema, nome_tabela, usuario_banco, operacao, dados_antigos, dados_novos
+    ) VALUES (
+        TG_TABLE_SCHEMA,
+        TG_TABLE_NAME,
+        session_user,
+        TG_OP,
+        CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN to_jsonb(OLD) ELSE NULL END,
+        CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN to_jsonb(NEW) ELSE NULL END
+    );
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_audit_notificacoes_casos ON silver.notificacoes_casos;
+CREATE TRIGGER trg_audit_notificacoes_casos
+AFTER INSERT OR UPDATE OR DELETE ON silver.notificacoes_casos
+FOR EACH ROW EXECUTE FUNCTION audit.fn_log_alteracoes();
+
+DROP TRIGGER IF EXISTS trg_audit_pacientes ON silver.pacientes;
+CREATE TRIGGER trg_audit_pacientes
+AFTER INSERT OR UPDATE OR DELETE ON silver.pacientes
+FOR EACH ROW EXECUTE FUNCTION audit.fn_log_alteracoes();
+
+CREATE OR REPLACE FUNCTION silver.fn_valida_data_encerramento()
+RETURNS trigger AS $$
+DECLARE
+    v_data_notificacao date;
+BEGIN
+    SELECT data_notificacao INTO v_data_notificacao
+    FROM silver.notificacoes_casos
+    WHERE notificacao_id = NEW.notificacao_id;
+
+    IF v_data_notificacao IS NULL THEN
+        RAISE EXCEPTION
+            'Erro de Integridade: notificacao_id % não encontrado em silver.notificacoes_casos.',
+            NEW.notificacao_id;
+    END IF;
+
+    IF NEW.data_encerramento < v_data_notificacao THEN
+        RAISE EXCEPTION
+            'Erro de Validação: data de encerramento (%) não pode ser anterior à data de notificação (%).',
+            NEW.data_encerramento, v_data_notificacao;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_valida_data_encerramento ON silver.casos_encerrados;
+CREATE TRIGGER trg_valida_data_encerramento
+BEFORE INSERT OR UPDATE ON silver.casos_encerrados
+FOR EACH ROW EXECUTE FUNCTION silver.fn_valida_data_encerramento();
+
+CREATE OR REPLACE FUNCTION silver.fn_valida_obito_evolucao()
+RETURNS trigger AS $$
+DECLARE
+    v_evolucao varchar(30);
+BEGIN
+    SELECT evolucao_caso INTO v_evolucao
+    FROM silver.notificacoes_casos
+    WHERE notificacao_id = NEW.notificacao_id;
+
+    IF v_evolucao IS NULL THEN
+        RAISE EXCEPTION
+            'Erro de Integridade: notificacao_id % não encontrado em silver.notificacoes_casos.',
+            NEW.notificacao_id;
+    END IF;
+
+    IF v_evolucao NOT IN ('Óbito pelo agravo', 'Óbito por outra causa') THEN
+        RAISE EXCEPTION
+            'Erro de Validação: não é possível registrar data de óbito quando a evolução do caso é "%".',
+            v_evolucao;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_valida_obito_evolucao ON silver.obitos;
+CREATE TRIGGER trg_valida_obito_evolucao
+BEFORE INSERT OR UPDATE ON silver.obitos
+FOR EACH ROW EXECUTE FUNCTION silver.fn_valida_obito_evolucao();
+
+CREATE OR REPLACE FUNCTION silver.fn_valida_evolucao_obito()
+RETURNS trigger AS $$
+BEGIN
+    IF NEW.evolucao_caso NOT IN ('Óbito pelo agravo', 'Óbito por outra causa')
+       AND EXISTS (
+           SELECT 1 FROM silver.obitos WHERE notificacao_id = NEW.notificacao_id
+       ) THEN
+        RAISE EXCEPTION
+            'Erro de Validação: não é possível alterar a evolução do caso para "%" enquanto houver registro de óbito vinculado (notificacao_id %).',
+            NEW.evolucao_caso, NEW.notificacao_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_valida_evolucao_obito ON silver.notificacoes_casos;
+CREATE TRIGGER trg_valida_evolucao_obito
+BEFORE UPDATE ON silver.notificacoes_casos
+FOR EACH ROW EXECUTE FUNCTION silver.fn_valida_evolucao_obito();
