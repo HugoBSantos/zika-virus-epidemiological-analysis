@@ -1,14 +1,16 @@
 --VIEW 1: Serie Temporal Semanal
-CREATE VIEW silver.vw_serie_temporal_semanal AS
+CREATE OR REPLACE VIEW silver.vw_serie_temporal_semanal AS
 SELECT
+	EXTRACT(YEAR FROM data_primeiros_sintomas) AS ano,
 	semana_primeiros_sintomas,
 	COUNT(*) AS total_casos
 FROM silver.notificacoes_casos
 WHERE classificacao_final = 'Confirmado'
-GROUP BY semana_primeiros_sintomas;
+GROUP BY ano, semana_primeiros_sintomas
+ORDER BY ano, semana_primeiros_sintomas;
 
 --VIEW 2: Casos por UF e Ano
-CREATE VIEW silver.vw_casos_uf_ano AS
+CREATE OR REPLACE VIEW silver.vw_casos_uf_ano AS
 SELECT
 	u.sigla AS uf,
 	EXTRACT(YEAR FROM nc.data_notificacao) AS ano,
@@ -21,11 +23,11 @@ GROUP BY u.sigla, ano
 ORDER BY ano;
 
 --VIEW 3: Piramide Etaria
-CREATE VIEW silver.vw_piramide_etaria AS
+CREATE OR REPLACE VIEW silver.vw_piramide_etaria AS
 WITH base AS(
 	SELECT
 		p.sexo,
-		idade_anos(p.idade_codificada) AS idade
+		silver.idade_anos(p.idade_codificada) AS idade
 	FROM silver.pacientes AS p
 	JOIN silver.notificacoes_casos AS nc ON p.paciente_id = nc.paciente_id
 	WHERE nc.classificacao_final = 'Confirmado'
@@ -52,7 +54,7 @@ GROUP BY faixa_etaria, sexo
 ORDER BY faixa_etaria, sexo;
 
 --VIEW 4: Vigilancia de Gestantes
-CREATE VIEW silver.vw_vigilancia_gestantes AS
+CREATE OR REPLACE VIEW silver.vw_vigilancia_gestantes AS
 SELECT
 	idade_gestacional,
 	COUNT(*) AS total_casos
@@ -61,7 +63,7 @@ WHERE idade_gestacional IN ('1º trimestre', '2º trimestre', '3º trimestre')
 GROUP BY idade_gestacional;
 
 --VIEW 5: Cards de KPIs
-CREATE VIEW silver.vw_kpis AS
+CREATE OR REPLACE VIEW silver.vw_kpis AS
 SELECT
 	COUNT(*) AS total_casos,
 	SUM(
