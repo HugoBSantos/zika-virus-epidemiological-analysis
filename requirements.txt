@@ -13,6 +13,8 @@ psycopg[binary]    # Load
 # Statistical Modeling & ML
 scipy
 scikit-learn
+statsmodels
+prophet
 
 # Data Visualization
 matplotlib
